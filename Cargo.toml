@@ -1,0 +1,12 @@
+[package]
+name = "ajax_zap_api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "*", features = ["blocking", "json"] }
+tokio = { version = "*", features = ["full"] }
+tokio-tcp = "*"
+serde_json = "*"
+serde = { version = "*", features = ["derive"] }
+clap = "*"
