@@ -1,20 +1,26 @@
+use reqwest::Proxy;
 use tokio::task;
-use tokio::time::{self, Duration};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 mod api;
-mod proxy;
+mod func;
 mod args;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let token = args::parse_args();
-    let _proxy_task = task::spawn(async {
-        proxy::start_proxy(token).await
+    let (token, proxy, zap) = args::parse_args(); 
+    let req_queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let req_queue_clone = Arc::clone(&req_queue);
+
+    task::spawn(async move {
+        if let Err(e) = func::start_proxy(req_queue_clone.clone()).await {
+            eprintln!("Ошибка в proxy::start_proxy: {}", e);
+        }
     });
 
-    
-    loop {
-        
-        time::sleep(Duration::from_secs(1)).await;
-    }
+    func::process_requests(req_queue.clone(), token).await;
+
+    Ok(())
 }

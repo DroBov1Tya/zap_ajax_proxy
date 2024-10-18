@@ -2,27 +2,28 @@ use std::net::SocketAddr;
 use std::io::{self};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex;
+use std::sync::Arc;
+
 use crate::api;
 
-pub async fn start_proxy(token: String) -> io::Result<()> {
+pub async fn start_proxy(req_queue: Arc<Mutex<Vec<String>>>) -> io::Result<()> {
     let addr: SocketAddr = "127.0.0.1:8010".parse().expect("Неверный адрес");
     let listener = TcpListener::bind(&addr).await?;
+
     println!("Proxy listening on {}\n", addr);
 
     let unique_urls = Arc::new(Mutex::new(Vec::new()));
-    let token = Arc::new(token);
     loop {
+        let req_queue = Arc::clone(&req_queue);
         let (socket, _) = listener.accept().await?;
         let unique_urls_clone = Arc::clone(&unique_urls);
-        let token_clone = Arc::clone(&token);
-        tokio::spawn(handle_client(socket, unique_urls_clone, token_clone));
+        tokio::spawn(handle_client(socket, unique_urls_clone, req_queue));
     }
 }
 
-async fn handle_client(mut client_socket: TcpStream, unique_urls: Arc<Mutex<Vec<String>>>, token: Arc<String>) {
+async fn handle_client(mut client_socket: TcpStream, unique_urls: Arc<Mutex<Vec<String>>>, req_queue: Arc<Mutex<Vec<String>>>) {
     let mut buffer = [0u8; 4096];
-    let token = token.to_string();
 
     match client_socket.read(&mut buffer).await {
         Ok(0) => return,
@@ -31,18 +32,19 @@ async fn handle_client(mut client_socket: TcpStream, unique_urls: Arc<Mutex<Vec<
             if let Some(url) = extract_url(&request) {
                 let url_to_check = url.clone();
                 let already_exists = {
-                    let guard = unique_urls.lock().unwrap();
+                    let guard = unique_urls.lock().await;
                     guard.contains(&url_to_check)
                 };
-
+                
                 if !already_exists {
                     {
-                        let mut guard = unique_urls.lock().unwrap();
+                        let mut guard = unique_urls.lock().await;
                         guard.push(url_to_check.clone());
                     }
-
-                    println!("Получен новый URL: {}", url_to_check);;
-                    let _ = api::req(&url_to_check, token).await;
+                
+                    println!("Получен новый URL: {}", url_to_check);
+                    let mut queue = req_queue.lock().await;
+                    queue.push(url_to_check)
                 }
             }
 
@@ -81,36 +83,11 @@ fn extract_url(request: &str) -> Option<String> {
         if parts.len() >= 2 {
             let mut url = parts[1].to_string();
 
-            // Определяем схему (http или https)
-            let scheme = if url.starts_with("https://") {
-                "https://"
-            } else {
-                "http://"
-            };
-
-            // Убираем схему из URL, если она есть
-            url = url.strip_prefix("http://").unwrap_or(&url).strip_prefix("https://").unwrap_or(&url).to_string();
-
-            // Убираем порт, если он есть, и добавляем схему обратно
-            let cleaned_url = if let Some(colon_index) = url.find(':') {
-                let url_without_port = &url[..colon_index]; // Получаем часть до двоеточия
-                let port_index = colon_index + 1;
-
-                if let Some(slash_index) = url[port_index..].find('/') {
-                    format!("{}{}{}", scheme, url_without_port, &url[port_index + slash_index..]) // Составляем URL без порта
-                } else {
-                    format!("{}{}", scheme, url_without_port) // Если слэша нет, возвращаем только хост с схемой
-                }
-            } else {
-                format!("{}{}", scheme, url) // Если порта нет, возвращаем оригинальный URL с схемой
-            };
-
-            // Проверяем, заканчивается ли URL на '/' и добавляем его, если нет
-            if !cleaned_url.ends_with('/') {
-                return Some(format!("{}{}", cleaned_url, "/"));
+            if !url.starts_with("http") {
+                url = format!("http://{}", url);
             }
 
-            return Some(cleaned_url);
+            return Some(url);
         }
     }
     None
@@ -130,4 +107,33 @@ fn extract_host_and_port(request: &str) -> Option<(String, u16)> {
         }
     }
     None
+}
+
+pub async fn process_requests(req_queue: Arc<Mutex<Vec<String>>>, token: String) {
+    let token = Arc::new(token);
+    loop {
+        let mut queue = req_queue.lock().await;
+
+        if let Some(url_to_process) = queue.first() {
+            let response = api::req(url_to_process, token.to_string()).await;
+            match response {
+                Ok(resp) if resp.status() == 200 => {
+                    println!("\n[+] Начат скан для url: {}\n", url_to_process);
+                    queue.remove(0);
+                }
+                Ok(_) => {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("Ошибка при выполнении запроса: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+        } else {
+            println!("Очередь пуста, ждем новых URL...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await; 
+        }
+    }
 }

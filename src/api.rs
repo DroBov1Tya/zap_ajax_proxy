@@ -1,8 +1,8 @@
 use reqwest::Client;
+use reqwest::Response;
 use reqwest::header::{HeaderMap, HeaderValue};
-use serde_json::Value;
 
-pub async fn req(target: &str, token: String) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn req(target: &str, token: String) -> Result<Response, Box<dyn std::error::Error>> {
     let client = Client::new();
 
     let mut headers = HeaderMap::new();
@@ -17,16 +17,5 @@ pub async fn req(target: &str, token: String) -> Result<(), Box<dyn std::error::
 
     let response = request.send().await?;
 
-    println!("Status: {}", response.status());
-
-    if response.status().is_success() {
-        let body: Value = response.json().await?;
-        println!("Ответ от ZAP: {:?}\n", body);
-    } else {
-        let r_status = response.status();
-        let error_text = response.text().await?;  // Получаем текст ошибки
-        println!("Ошибка запроса: {} - {}\n", &r_status, error_text); // Выводим статус и текст ошибки
-    }
-
-    Ok(())
+    Ok(response)
 }
